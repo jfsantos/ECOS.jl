@@ -78,7 +78,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     data::Union{Nothing,ModelData} # only non-Nothing between MOI.copy_to and MOI.optimize!
     sol::Solution
     silent::Bool
-    options::Dict{Symbol,Any}
+    options::Dict{String,Any}
     function Optimizer(; kwargs...)
         optimizer = new(
             ConeData(),
@@ -86,10 +86,16 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             nothing,
             Solution(),
             false,
-            Dict{Symbol,Any}(),
+            Dict{String,Any}(),
         )
+        if length(kwargs) > 0
+            @warn(
+                "Passing keyword attributes is deprecated. Use " *
+                "`set_optimizer_attribute` instead.",
+            )
+        end
         for (key, value) in kwargs
-            MOI.set(optimizer, MOI.RawParameter(String(key)), value)
+            MOI.set(optimizer, MOI.RawOptimizerAttribute(String(key)), value)
         end
         return optimizer
     end
@@ -97,26 +103,15 @@ end
 
 MOI.get(::Optimizer, ::MOI.SolverName) = "ECOS"
 
-function MOI.set(optimizer::Optimizer, param::MOI.RawParameter, value)
-    if !(param.name isa String)
-        Base.depwarn(
-            "passing `$(param.name)` to `MOI.RawParameter` as type " *
-            "`$(typeof(param.name))` is deprecated. Use a string instead.",
-            Symbol("MOI.set"),
-        )
-    end
-    return optimizer.options[Symbol(param.name)] = value
+function MOI.set(optimizer::Optimizer, param::MOI.RawOptimizerAttribute, value)
+    optimizer.options[param.name] = value
+    return
 end
-function MOI.get(optimizer::Optimizer, param::MOI.RawParameter)
-    if !(param.name isa String)
-        Base.depwarn(
-            "passing $(param.name) to `MOI.RawParameter` as type " *
-            "$(typeof(param.name)) is deprecated. Use a string instead.",
-            Symbol("MOI.get"),
-        )
-    end
-    # TODO: This gives a poor error message if the name of the parameter is invalid.
-    return optimizer.options[Symbol(param.name)]
+
+function MOI.get(optimizer::Optimizer, param::MOI.RawOptimizerAttribute)
+    # TODO: This gives a poor error message if the name of the parameter is
+    # invalid.
+    return optimizer.options[param.name]
 end
 
 MOI.supports(::Optimizer, ::MOI.Silent) = true
@@ -224,7 +219,7 @@ end
 
 # Build constraint matrix
 output_index(t::MOI.VectorAffineTerm) = t.output_index
-variable_index_value(t::MOI.ScalarAffineTerm) = t.variable_index.value
+variable_index_value(t::MOI.ScalarAffineTerm) = t.variable.value
 function variable_index_value(t::MOI.VectorAffineTerm)
     return variable_index_value(t.scalar_term)
 end
@@ -365,9 +360,8 @@ function MOI.optimize!(optimizer::Optimizer)
     objective_constant = optimizer.data.objective_constant
     c = optimizer.data.c
     optimizer.data = nothing # Allows GC to free optimizer.data before A is loaded to ECOS
-    options = optimizer.options
+    options = Dict(Symbol(k) => v for (k, v) in optimizer.options)
     if optimizer.silent
-        options = copy(options)
         options[:verbose] = false
     end
     ecos_prob_ptr = ECOS.setup(
@@ -409,7 +403,7 @@ function MOI.optimize!(optimizer::Optimizer)
     )
 end
 
-MOI.get(optimizer::Optimizer, ::MOI.SolveTime) = optimizer.sol.solve_time
+MOI.get(optimizer::Optimizer, ::MOI.SolveTimeSec) = optimizer.sol.solve_time
 function MOI.get(optimizer::Optimizer, ::MOI.RawStatusString)
     # Strings from https://github.com/ifa-ethz/ecos/blob/master/include/ecos.h
     flag = optimizer.sol.ret_val
@@ -489,7 +483,7 @@ function MOI.get(optimizer::Optimizer, attr::MOI.DualObjectiveValue)
 end
 
 function MOI.get(optimizer::Optimizer, attr::MOI.PrimalStatus)
-    if attr.N > MOI.get(optimizer, MOI.ResultCount())
+    if attr.result_index > MOI.get(optimizer, MOI.ResultCount())
         return MOI.NO_SOLUTION
     end
     flag = optimizer.sol.ret_val
@@ -541,7 +535,7 @@ function MOI.get(
 end
 
 function MOI.get(optimizer::Optimizer, attr::MOI.DualStatus)
-    if attr.N > MOI.get(optimizer, MOI.ResultCount())
+    if attr.result_index > MOI.get(optimizer, MOI.ResultCount())
         return MOI.NO_SOLUTION
     end
     flag = optimizer.sol.ret_val
